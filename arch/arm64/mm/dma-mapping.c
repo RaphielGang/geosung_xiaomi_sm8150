@@ -2,7 +2,6 @@
  * SWIOTLB-based DMA API implementation
  *
  * Copyright (C) 2012 ARM Ltd.
- * Copyright (C) 2019 XiaoMi, Inc.
  * Author: Catalin Marinas <catalin.marinas@arm.com>
  *
  * This program is free software; you can redistribute it and/or modify
