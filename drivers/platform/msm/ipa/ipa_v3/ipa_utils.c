@@ -4232,6 +4232,11 @@ int ipa3_cfg_ep_ctrl(u32 clnt_hdl, const struct ipa_ep_cfg_ctrl *ep_ctrl)
 		return -EPERM;
 	}
 
+	if (ipa3_ctx->ipa_endp_delay_wa) {
+		IPAERR("pipe setting delay is not supported\n");
+		return 0;
+	}
+
 	IPADBG("pipe=%d ep_suspend=%d, ep_delay=%d\n",
 		clnt_hdl,
 		ep_ctrl->ipa_ep_suspend,
@@ -6710,15 +6715,19 @@ static int __ipa3_stop_gsi_channel(u32 clnt_hdl)
 			ep->gsi_chan_hdl, res);
 		if (res != -GSI_STATUS_AGAIN && res != -GSI_STATUS_TIMED_OUT)
 			return res;
-
-		IPADBG("Inject a DMA_TASK with 1B packet to IPA\n");
-		/* Send a 1B packet DMA_TASK to IPA and try again */
-		res = ipa3_inject_dma_task_for_gsi();
-		if (res) {
-			IPAERR("Failed to inject DMA TASk for GSI\n");
-			return res;
+		/*
+		 * From >=IPA4.0 version not required to send dma send command,
+		 * this issue was fixed in latest versions.
+		 */
+		if (ipa3_ctx->ipa_hw_type < IPA_HW_v4_0) {
+			IPADBG("Inject a DMA_TASK with 1B packet to IPA\n");
+			/* Send a 1B packet DMA_TASK to IPA and try again */
+			res = ipa3_inject_dma_task_for_gsi();
+			if (res) {
+				IPAERR("Failed to inject DMA TASk for GSI\n");
+				return res;
+			}
 		}
-
 		/* sleep for short period to flush IPA */
 		usleep_range(IPA_GSI_CHANNEL_STOP_SLEEP_MIN_USEC,
 			IPA_GSI_CHANNEL_STOP_SLEEP_MAX_USEC);
@@ -6831,6 +6840,49 @@ void ipa3_suspend_apps_pipes(bool suspend)
 				res = gsi_start_channel(ep->gsi_chan_hdl);
 				if (res) {
 					IPAERR("failed to start WAN channel\n");
+					ipa_assert();
+				}
+			}
+		} else {
+			ipa3_cfg_ep_ctrl(ipa_ep_idx, &cfg);
+		}
+		if (suspend)
+			ipa3_gsi_poll_after_suspend(ep);
+	}
+
+	ipa_ep_idx = ipa_get_ep_mapping(IPA_CLIENT_ODL_DPL_CONS);
+	/* Considering the case for SSR. */
+	if (ipa_ep_idx == -1) {
+		IPADBG("Invalid mapping for IPA_CLIENT_ODL_DPL_CONS\n");
+		return;
+	}
+	ep = &ipa3_ctx->ep[ipa_ep_idx];
+	if (ep->valid) {
+		IPADBG("%s pipe %d\n", suspend ? "suspend" : "unsuspend",
+			ipa_ep_idx);
+		/*
+		 * move the channel to callback mode.
+		 * This needs to happen before starting the channel to make
+		 * sure we don't loose any interrupt
+		 */
+		if (!suspend && !atomic_read(&ep->sys->curr_polling_state))
+			gsi_config_channel_mode(ep->gsi_chan_hdl,
+			GSI_CHAN_MODE_CALLBACK);
+		if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_0) {
+			if (suspend) {
+				res = __ipa3_stop_gsi_channel(ipa_ep_idx);
+				if (res) {
+					IPAERR("failed to stop ODL channel\n");
+					ipa_assert();
+				}
+			} else if (!atomic_read(&ipa3_ctx->is_ssr)) {
+				/* If SSR was alreday started not required to
+				 * start WAN channel,Because in SSR will stop
+				 * channel and reset the channel.
+				 */
+				res = gsi_start_channel(ep->gsi_chan_hdl);
+				if (res) {
+					IPAERR("failed to start ODL channel\n");
 					ipa_assert();
 				}
 			}
@@ -7448,27 +7500,27 @@ void ipa3_read_mailbox_17(enum uc_state state)
 	val = ipahal_read_reg_mn(IPA_UC_MAILBOX_m_n,
 			0,
 			17);
-		IPAERR_RL("GSI INTSET %d\n mailbox-17: 0x%x\n",
+		IPADBG_LOW("GSI INTSET %d\n mailbox-17: 0x%x\n",
 			ipa3_ctx->gsi_chk_intset_value,
 			val);
 	switch (state)	{
 	case IPA_PC_SAVE_CONTEXT_SAVE_ENTERED:
 		if (val != PC_SAVE_CONTEXT_SAVE_ENTERED) {
-			IPAERR_RL("expected 0x%x, value: 0x%x\n",
+			IPADBG_LOW("expected 0x%x, value: 0x%x\n",
 				PC_SAVE_CONTEXT_SAVE_ENTERED,
 				val);
 		}
 		break;
 	case IPA_PC_SAVE_CONTEXT_STATUS_SUCCESS:
 		if (val != PC_SAVE_CONTEXT_STATUS_SUCCESS) {
-			IPAERR_RL("expected 0x%x, value: 0x%x\n",
+			IPADBG_LOW("expected 0x%x, value: 0x%x\n",
 				PC_SAVE_CONTEXT_STATUS_SUCCESS,
 				val);
 		}
 		break;
 	case IPA_PC_RESTORE_CONTEXT_ENTERED:
 		if (val != PC_RESTORE_CONTEXT_ENTERED) {
-			IPAERR_RL("expected 0x%x, value: 0x%x\n",
+			IPADBG_LOW("expected 0x%x, value: 0x%x\n",
 				PC_RESTORE_CONTEXT_ENTERED,
 				val);
 		}
@@ -7477,7 +7529,7 @@ void ipa3_read_mailbox_17(enum uc_state state)
 			ipa3_ctx->uc_mailbox17_chk++;
 		if (val != PC_RESTORE_CONTEXT_STATUS_SUCCESS) {
 			ipa3_ctx->uc_mailbox17_mismatch++;
-			IPAERR_RL("expected 0x%x, value: 0x%x\n",
+			IPADBG_LOW("expected 0x%x, value: 0x%x\n",
 				PC_RESTORE_CONTEXT_STATUS_SUCCESS,
 				val);
 		}

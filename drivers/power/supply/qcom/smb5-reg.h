@@ -1,4 +1,4 @@
-/* Copyright (c) 2018 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -22,6 +22,7 @@
 #define DCIN_BASE	0x1400
 #define TYPEC_BASE	0X1500
 #define MISC_BASE	0x1600
+#define MISC_PBS_BASE	0x7500
 
 #define PERPH_TYPE_OFFSET	0x04
 #define TYPE_MASK		GENMASK(7, 0)
@@ -86,6 +87,11 @@ enum {
 #define NO_OF_SAMPLE_FOR_RCHG_SHIFT		2
 #define NO_OF_SAMPLE_FOR_RCHG			GENMASK(3, 2)
 
+#define CHGR_ADC_TERM_CFG_REG			(CHGR_BASE + 0x6C)
+#define TERM_BASED_ON_SYNC_CONV_OR_SAMPLE_CNT	BIT(0)
+#define TERM_BASED_ON_SYNC_CONV			0
+#define TERM_BASED_ON_SAMPLE_CNT		1
+
 #define CHGR_FLOAT_VOLTAGE_CFG_REG		(CHGR_BASE + 0x70)
 
 #define CHARGE_INHIBIT_THRESHOLD_CFG_REG	(CHGR_BASE + 0x72)
@@ -149,6 +155,10 @@ enum {
 
 #define DCDC_OTG_CFG_REG			(DCDC_BASE + 0x53)
 #define OTG_EN_SRC_CFG_BIT			BIT(1)
+
+#define OTG_FAULT_CONDITION_CFG_REG		(DCDC_BASE + 0x56)
+#define USBIN_MID_COMP_FAULT_EN_BIT		BIT(5)
+#define USBIN_COLLAPSE_FAULT_EN_BIT		BIT(4)
 
 #define DCDC_CFG_REF_MAX_PSNS_REG		(DCDC_BASE + 0x8C)
 
@@ -307,12 +317,12 @@ enum {
 
 #define DCIN_CMD_IL_REG				(DCIN_BASE + 0x40)
 #define DCIN_SUSPEND_BIT			BIT(0)
-#define DCIN_EN_OVERRIDE_BIT		BIT(1)
-#define DCIN_EN_BIT					BIT(2)
+#define DCIN_EN_OVERRIDE_BIT			BIT(1)
+#define DCIN_EN_BIT				GENMASK(2, 1)
 
-#define DCIN_CMD_PULLDOWN_REG		(DCIN_BASE + 0x45)
-#define DCIN_PULLDOWN_EN_BIT		BIT(0)
-#define DCIN_MID_PULLDOWN_BIT		BIT(1)
+#define DCIN_CMD_PULLDOWN_REG			(DCIN_BASE + 0x45)
+#define DCIN_PULLDOWN_EN_BIT			BIT(0)
+#define DCIN_MID_PULLDOWN_BIT			BIT(1)
 
 #define DCIN_LOAD_CFG_REG			(DCIN_BASE + 0x65)
 #define INPUT_MISS_POLL_EN_BIT			BIT(5)
@@ -518,4 +528,7 @@ enum {
 
 #define SMB_REG_H_THRESHOLD_MSB_REG		(MISC_BASE + 0XBC)
 
+/* SDAM regs */
+#define MISC_PBS_RT_STS_REG			(MISC_PBS_BASE + 0x10)
+#define PULSE_SKIP_IRQ_BIT			BIT(4)
 #endif /* __SMB5_CHARGER_REG_H */
