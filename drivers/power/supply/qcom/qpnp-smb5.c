@@ -2065,10 +2065,7 @@ static int smb5_batt_get_prop(struct power_supply *psy,
 		val->intval = chg->fcc_stepper_enable;
 		break;
 	case POWER_SUPPLY_PROP_LIQUID_DETECTION:
-		if (chg->support_liquid == true)
-			rc = smblib_get_prop_liquid_status(chg, val);
-		else
-			val->intval = 0;
+		rc = smblib_get_prop_liquid_status(chg, val);
 		break;
 		break;
 	default:
