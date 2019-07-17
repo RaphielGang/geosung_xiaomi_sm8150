@@ -262,6 +262,7 @@ int32_t cam_context_release_dev_to_hw(struct cam_context *ctx,
 	ctx->session_hdl = -1;
 	ctx->dev_hdl = -1;
 	ctx->link_hdl = -1;
+	ctx->last_flush_req = 0;
 
 	return 0;
 }
@@ -491,7 +492,6 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 			ctx->dev_name, ctx->ctx_id);
 
 	return rc;
-
 put_ctx_ref:
 	for (/*--j*/; j >= 0; j--)
 		cam_context_putref(ctx);
@@ -1022,6 +1022,7 @@ int32_t cam_context_dump_pf_info_to_hw(struct cam_context *ctx,
 		cmd_args.ctxt_to_hw_map = ctx->ctxt_to_hw_map;
 		cmd_args.cmd_type = CAM_HW_MGR_CMD_DUMP_PF_INFO;
 		cmd_args.u.pf_args.pf_data.packet = packet;
+		cmd_args.u.pf_args.pf_data.ctx_id = ctx->ctx_id;
 		cmd_args.u.pf_args.iova = iova;
 		cmd_args.u.pf_args.buf_info = buf_info;
 		cmd_args.u.pf_args.mem_found = mem_found;

@@ -453,7 +453,7 @@ __qmi_rmnet_delete_client(void *port, struct qmi_info *qmi, int idx)
 		qmi->dfc_pending[idx] = NULL;
 	}
 
-	if (!qmi_rmnet_has_client(qmi)) {
+	if (!qmi_rmnet_has_client(qmi) && !qmi_rmnet_has_pending(qmi)) {
 		rmnet_reset_qmi_pt(port);
 		kfree(qmi);
 		return 0;
@@ -481,6 +481,8 @@ qmi_rmnet_delete_client(void *port, struct qmi_info *qmi, struct tcmsg *tcm)
 		wda_qmi_client_exit(data);
 		qmi->wda_client = NULL;
 		qmi->wda_pending = NULL;
+	} else {
+		qmi_rmnet_flush_ps_wq();
 	}
 
 	__qmi_rmnet_delete_client(port, qmi, idx);
@@ -575,7 +577,7 @@ void qmi_rmnet_enable_all_flows(struct net_device *dev)
 {
 	struct qos_info *qos;
 	struct rmnet_bearer_map *bearer;
-	bool do_wake = false;
+	bool do_wake;
 
 	qos = (struct qos_info *)rmnet_get_qos_pt(dev);
 	if (!qos)
@@ -584,19 +586,18 @@ void qmi_rmnet_enable_all_flows(struct net_device *dev)
 	spin_lock_bh(&qos->qos_lock);
 
 	list_for_each_entry(bearer, &qos->bearer_head, list) {
-		if (!bearer->grant_size)
-			do_wake = true;
+		if (bearer->tx_off)
+			continue;
+		do_wake = !bearer->grant_size;
 		bearer->grant_size = DEFAULT_GRANT;
 		bearer->grant_thresh = DEFAULT_GRANT;
 		bearer->seq = 0;
 		bearer->ack_req = 0;
 		bearer->tcp_bidir = false;
 		bearer->rat_switch = false;
-	}
 
-	if (do_wake) {
-		netif_tx_wake_all_queues(dev);
-		trace_dfc_qmi_tc(dev->name, 0xFF, 0, DEFAULT_GRANT, 0, 0, 1);
+		if (do_wake)
+			dfc_bearer_flow_ctl(dev, bearer, qos);
 	}
 
 	spin_unlock_bh(&qos->qos_lock);
@@ -738,7 +739,7 @@ EXPORT_SYMBOL(qmi_rmnet_qos_exit);
 #ifdef CONFIG_QCOM_QMI_POWER_COLLAPSE
 static struct workqueue_struct  *rmnet_ps_wq;
 static struct rmnet_powersave_work *rmnet_work;
-static struct list_head ps_list;
+static LIST_HEAD(ps_list);
 
 struct rmnet_powersave_work {
 	struct delayed_work work;
@@ -814,11 +815,6 @@ int qmi_rmnet_set_powersave_mode(void *port, uint8_t enable)
 		return rc;
 	}
 
-	if (enable)
-		dfc_qmi_wq_flush(qmi);
-	else
-		qmi_rmnet_query_flows(qmi);
-
 	return 0;
 }
 EXPORT_SYMBOL(qmi_rmnet_set_powersave_mode);
@@ -849,6 +845,10 @@ static void qmi_rmnet_check_stats(struct work_struct *work)
 		return;
 
 	if (qmi->ps_enabled) {
+
+		/* Ready to accept grant */
+		qmi->ps_ignore_grant = false;
+
 		/* Register to get QMI DFC and DL marker */
 		if (qmi_rmnet_set_powersave_mode(real_work->port, 0) < 0) {
 			/* If this failed need to retry quickly */
@@ -859,9 +859,11 @@ static void qmi_rmnet_check_stats(struct work_struct *work)
 		}
 		qmi->ps_enabled = false;
 
+		/* Do a query when coming out of powersave */
+		qmi_rmnet_query_flows(qmi);
+
 		if (rmnet_get_powersave_notif(real_work->port))
 			qmi_rmnet_ps_off_notify(real_work->port);
-
 
 		goto end;
 	}
@@ -890,6 +892,9 @@ static void qmi_rmnet_check_stats(struct work_struct *work)
 			return;
 		}
 		qmi->ps_enabled = true;
+
+		/* Ignore grant after going into powersave */
+		qmi->ps_ignore_grant = true;
 
 		/* Clear the bit before enabling flow so pending packets
 		 * can trigger the work again
@@ -934,7 +939,6 @@ void qmi_rmnet_work_init(void *port)
 		rmnet_ps_wq = NULL;
 		return;
 	}
-	INIT_LIST_HEAD(&ps_list);
 	INIT_DEFERRABLE_WORK(&rmnet_work->work, qmi_rmnet_check_stats);
 	rmnet_work->port = port;
 	rmnet_get_packets(rmnet_work->port, &rmnet_work->old_rx_pkts,
@@ -982,4 +986,23 @@ void qmi_rmnet_set_dl_msg_active(void *port)
 	qmi->dl_msg_active = true;
 }
 EXPORT_SYMBOL(qmi_rmnet_set_dl_msg_active);
+
+void qmi_rmnet_flush_ps_wq(void)
+{
+	if (rmnet_ps_wq)
+		flush_workqueue(rmnet_ps_wq);
+}
+
+bool qmi_rmnet_ignore_grant(void *port)
+{
+	struct qmi_info *qmi;
+
+	qmi = (struct qmi_info *)rmnet_get_qmi_pt(port);
+	if (unlikely(!qmi))
+		return false;
+
+	return qmi->ps_ignore_grant;
+}
+EXPORT_SYMBOL(qmi_rmnet_ignore_grant);
+
 #endif

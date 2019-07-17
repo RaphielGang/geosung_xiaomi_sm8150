@@ -4241,6 +4241,9 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 	}
 	pr_info("%s\n", __func__);
 	mutex_lock(&panel->panel_lock);
+	if (!panel->panel_initialized)
+		goto exit;
+
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_LP1);
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
@@ -4284,7 +4287,7 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 				display->drm_dev->doze_brightness = DOZE_BRIGHTNESS_INVALID;
 		}
 	}
-
+exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -4299,10 +4302,14 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 	}
 	pr_info("%s\n", __func__);
 	mutex_lock(&panel->panel_lock);
+	if (!panel->panel_initialized)
+		goto exit;
+
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_LP2);
 	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_LP2 cmd, rc=%d\n",
 		       panel->name, rc);
+exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -4328,6 +4335,7 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 		pr_info("%s skip\n", __func__);
 
 	panel->in_aod = false;
+exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -5061,14 +5069,15 @@ int dsi_panel_enable(struct dsi_panel *panel)
 	mutex_lock(&panel->panel_lock);
 
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
-	if (rc) {
+	if (rc)
 		pr_err("[%s] failed to send DSI_CMD_SET_ON cmds, rc=%d\n",
 		       panel->name, rc);
-	}
-	panel->panel_initialized = true;
-	panel->fod_hbm_enabled = false;
-	panel->in_aod = false;
-	panel->skip_dimmingon = STATE_NONE;
+	else
+		panel->panel_initialized = true;
+		panel->panel_initialized = true;
+		panel->fod_hbm_enabled = false;
+		panel->in_aod = false;
+		panel->skip_dimmingon = STATE_NONE;
 
 	mutex_unlock(&panel->panel_lock);
 	pr_info("[SDE] %s: DSI_CMD_SET_ON\n", __func__);

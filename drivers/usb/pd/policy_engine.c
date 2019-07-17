@@ -1201,7 +1201,10 @@ static void phy_msg_received(struct usbpd *pd, enum pd_sop_type sop,
 	list_add_tail(&rx_msg->entry, &pd->rx_q);
 	spin_unlock_irqrestore(&pd->rx_lock, flags);
 
-	kick_sm(pd, 0);
+	if (!work_busy(&pd->sm_work))
+		kick_sm(pd, 0);
+	else
+		usbpd_dbg(&pd->dev, "usbpd_sm already running\n");
 }
 
 static void phy_shutdown(struct usbpd *pd)
@@ -1535,6 +1538,9 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 				!pd->in_explicit_contract)
 			stop_usb_host(pd);
 
+		if (!pd->in_explicit_contract)
+			dual_role_instance_changed(pd->dual_role);
+
 		pd->in_explicit_contract = true;
 
 		if (pd->vdm_tx && !pd->sm_queued)
@@ -1548,7 +1554,6 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 
 		kobject_uevent(&pd->dev.kobj, KOBJ_CHANGE);
 		complete(&pd->is_ready);
-		dual_role_instance_changed(pd->dual_role);
 		break;
 
 	case PE_PRS_SRC_SNK_TRANSITION_TO_OFF:
@@ -1723,6 +1728,9 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 		break;
 
 	case PE_SNK_READY:
+		if (!pd->in_explicit_contract)
+			dual_role_instance_changed(pd->dual_role);
+
 		pd->in_explicit_contract = true;
 
 		if (pd->vdm_tx)
@@ -1734,7 +1742,6 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 
 		kobject_uevent(&pd->dev.kobj, KOBJ_CHANGE);
 		complete(&pd->is_ready);
-		dual_role_instance_changed(pd->dual_role);
 		break;
 
 	case PE_SNK_TRANSITION_TO_DEFAULT:
@@ -2754,15 +2761,19 @@ static void usbpd_sm(struct work_struct *w)
 		if (IS_CTRL(rx_msg, MSG_GET_SOURCE_CAP)) {
 			pd->current_state = PE_SRC_SEND_CAPABILITIES;
 			kick_sm(pd, 0);
+			break;
 		} else if (IS_CTRL(rx_msg, MSG_GET_SINK_CAP)) {
 			ret = pd_send_msg(pd, MSG_SINK_CAPABILITIES,
 					pd->sink_caps, pd->num_sink_caps,
 					SOP_MSG);
-			if (ret)
+			if (ret) {
 				usbpd_set_state(pd, PE_SEND_SOFT_RESET);
+				break;
+			}
 		} else if (IS_DATA(rx_msg, MSG_REQUEST)) {
 			pd->rdo = *(u32 *)rx_msg->payload;
 			usbpd_set_state(pd, PE_SRC_NEGOTIATE_CAPABILITY);
+			break;
 		} else if (IS_CTRL(rx_msg, MSG_DR_SWAP)) {
 			if (pd->vdm_state == MODE_ENTERED) {
 				usbpd_set_state(pd, PE_SRC_HARD_RESET);
@@ -2796,6 +2807,8 @@ static void usbpd_sm(struct work_struct *w)
 			vconn_swap(pd);
 		} else if (IS_DATA(rx_msg, MSG_VDM)) {
 			handle_vdm_rx(pd, rx_msg);
+			if (pd->vdm_tx) /* response sent after delay */
+				break;
 		} else if (IS_CTRL(rx_msg, MSG_GET_SOURCE_CAP_EXTENDED)) {
 			handle_get_src_cap_extended(pd);
 		} else if (IS_EXT(rx_msg, MSG_GET_BATTERY_CAP)) {
@@ -2816,7 +2829,13 @@ static void usbpd_sm(struct work_struct *w)
 			if (ret)
 				usbpd_set_state(pd, PE_SEND_SOFT_RESET);
 			break;
-		} else if (pd->send_pr_swap) {
+		}
+
+		if (pd->current_state != PE_SRC_READY)
+			break;
+
+		/* handle outgoing requests */
+		if (pd->send_pr_swap) {
 			pd->send_pr_swap = false;
 			ret = pd_send_msg(pd, MSG_PR_SWAP, NULL, 0, SOP_MSG);
 			if (ret) {
@@ -2841,6 +2860,7 @@ static void usbpd_sm(struct work_struct *w)
 		} else {
 			start_src_ams(pd, false);
 		}
+
 		break;
 
 	case PE_SRC_TRANSITION_TO_DEFAULT:
@@ -3085,7 +3105,8 @@ static void usbpd_sm(struct work_struct *w)
 			break;
 		} else if (IS_DATA(rx_msg, MSG_VDM)) {
 			handle_vdm_rx(pd, rx_msg);
-			break;
+			if (pd->vdm_tx) /* response sent after delay */
+				break;
 		} else if (IS_DATA(rx_msg, MSG_ALERT)) {
 			u32 ado;
 
@@ -3220,7 +3241,13 @@ static void usbpd_sm(struct work_struct *w)
 			} else if (pd->send_request) {
 				pd->send_request = false;
 				usbpd_set_state(pd, PE_SNK_SELECT_CAPABILITY);
-			} else if (pd->send_pr_swap) {
+			}
+
+			if (pd->current_state != PE_SNK_READY)
+				break;
+
+			/* handle outgoing requests */
+			if (pd->send_pr_swap) {
 				pd->send_pr_swap = false;
 				ret = pd_send_msg(pd, MSG_PR_SWAP, NULL, 0,
 						SOP_MSG);
@@ -3397,7 +3424,7 @@ sm_done:
 	spin_unlock_irqrestore(&pd->rx_lock, flags);
 
 	/* requeue if there are any new/pending RX messages */
-	if (!ret)
+	if (!ret && !pd->sm_queued)
 		kick_sm(pd, 0);
 
 	if (!pd->sm_queued)
@@ -3489,7 +3516,12 @@ static int psy_changed(struct notifier_block *nb, unsigned long evt, void *ptr)
 		usbpd_dbg(&pd->dev, "hard reset: typec mode:%d present:%d\n",
 			typec_mode, pd->vbus_present);
 		pd->typec_mode = typec_mode;
-		kick_sm(pd, 0);
+
+		if (!work_busy(&pd->sm_work))
+			kick_sm(pd, 0);
+		else
+			usbpd_dbg(&pd->dev, "usbpd_sm already running\n");
+
 		return 0;
 	}
 
@@ -3704,12 +3736,6 @@ static int usbpd_dr_set_property(struct dual_role_phy_instance *dual_role,
 				return -EAGAIN;
 			}
 
-			if (pd->current_state == PE_SNK_READY &&
-					!is_sink_tx_ok(pd)) {
-				usbpd_err(&pd->dev, "Rp indicates SinkTxNG\n");
-				return -EAGAIN;
-			}
-
 			mutex_lock(&pd->swap_lock);
 			reinit_completion(&pd->is_ready);
 			pd->send_dr_swap = true;
@@ -3761,12 +3787,6 @@ static int usbpd_dr_set_property(struct dual_role_phy_instance *dual_role,
 			if (pd->current_state != PE_SRC_READY &&
 					pd->current_state != PE_SNK_READY) {
 				usbpd_err(&pd->dev, "power_role swap not allowed: PD not in Ready state\n");
-				return -EAGAIN;
-			}
-
-			if (pd->current_state == PE_SNK_READY &&
-					!is_sink_tx_ok(pd)) {
-				usbpd_err(&pd->dev, "Rp indicates SinkTxNG\n");
 				return -EAGAIN;
 			}
 
@@ -4065,7 +4085,7 @@ static ssize_t select_pdo_store(struct device *dev,
 	mutex_lock(&pd->swap_lock);
 
 	/* Only allowed if we are already in explicit sink contract */
-	if (pd->current_state != PE_SNK_READY || !is_sink_tx_ok(pd)) {
+	if (pd->current_state != PE_SNK_READY) {
 		usbpd_err(&pd->dev, "select_pdo: Cannot select new PDO yet\n");
 		ret = -EBUSY;
 		goto out;
@@ -4112,7 +4132,7 @@ static ssize_t select_pdo_store(struct device *dev,
 	if (pd->selected_pdo != pd->requested_pdo ||
 			pd->current_voltage != pd->requested_voltage) {
 		usbpd_err(&pd->dev, "select_pdo: request rejected\n");
-		ret = -EINVAL;
+		ret = -ECONNREFUSED;
 	}
 
 out:
@@ -4218,7 +4238,7 @@ static int trigger_tx_msg(struct usbpd *pd, bool *msg_tx_flag)
 	int ret = 0;
 
 	/* Only allowed if we are already in explicit sink contract */
-	if (pd->current_state != PE_SNK_READY || !is_sink_tx_ok(pd)) {
+	if (pd->current_state != PE_SNK_READY) {
 		usbpd_err(&pd->dev, "%s: Cannot send msg\n", __func__);
 		ret = -EBUSY;
 		goto out;
